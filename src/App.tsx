@@ -1,92 +1,101 @@
-import { useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
-
-type Status =
-  | { kind: "idle" }
-  | { kind: "loading" }
-  | { kind: "recording" }
-  | { kind: "transcribing" }
-  | { kind: "done"; transcript: string }
-  | { kind: "error"; message: string };
+import { useEffect, useState } from "react";
+import { Channel, invoke } from "@tauri-apps/api/core";
+import AppHeader from "./AppHeader";
+import SessionScreen, { type Mic } from "./SessionScreen";
+import WelcomeScreen from "./WelcomeScreen";
+import { loadSessions, saveSessions, type Session } from "./sessions";
 
 export default function App() {
-  const [status, setStatus] = useState<Status>({ kind: "idle" });
-  const isRecording = status.kind === "recording";
-  const isBusy = status.kind === "loading" || status.kind === "transcribing";
+  const [sessions, setSessions] = useState(loadSessions);
+  const [openSessionId, setOpenSessionId] = useState<string | null>(null);
+  // Always refers to the open session: leaving a session closes the microphone first.
+  const [mic, setMic] = useState<Mic>({ kind: "paused" });
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const openSession = sessions.find((session) => session.id === openSessionId);
 
-  async function startRecording() {
-    setStatus({ kind: "loading" });
+  useEffect(() => {
     try {
-      await invoke("start_listening");
-      setStatus({ kind: "recording" });
+      saveSessions(sessions);
+      setSaveError(null);
     } catch (error) {
-      setStatus({ kind: "error", message: String(error) });
+      setSaveError(`Couldn't save sessions: ${String(error)}`);
+    }
+  }, [sessions]);
+
+  async function listen(sessionId: string) {
+    setMic({ kind: "starting" });
+    // Appends by id, so the trailing transcript lands in its session even after leaving it.
+    const onTranscript = new Channel<string>((transcript) => {
+      setSessions((current) =>
+        current.map((session) =>
+          session.id === sessionId
+            ? { ...session, transcripts: [...session.transcripts, transcript] }
+            : session,
+        ),
+      );
+    });
+    try {
+      await invoke("start_listening", { onTranscript });
+      setMic({ kind: "listening" });
+    } catch (error) {
+      setMic({ kind: "failed", message: String(error) });
     }
   }
 
-  async function stopRecording() {
-    setStatus({ kind: "transcribing" });
+  /** Returns whether the microphone closed without an error. */
+  async function pause() {
+    setMic({ kind: "stopping" });
     try {
-      const transcript = await invoke<string>("stop_listening");
-      setStatus({ kind: "done", transcript });
+      await invoke("stop_listening");
+      setMic({ kind: "paused" });
+      return true;
     } catch (error) {
-      setStatus({ kind: "error", message: String(error) });
+      setMic({ kind: "failed", message: String(error) });
+      return false;
     }
+  }
+
+  async function startSession() {
+    const session: Session = { id: crypto.randomUUID(), startedAt: Date.now(), transcripts: [] };
+    setSessions((current) => [session, ...current]);
+    setOpenSessionId(session.id);
+    await listen(session.id);
+  }
+
+  async function leaveSession() {
+    // Stay if stopping fails, so its error remains visible.
+    if (mic.kind === "listening" && !(await pause())) {
+      return;
+    }
+    setMic({ kind: "paused" });
+    setOpenSessionId(null);
   }
 
   return (
-    <main className="flex min-h-screen flex-col items-center justify-center gap-8 p-8">
-      <button
-        type="button"
-        className={`btn btn-xl btn-wide ${isRecording ? "btn-error" : "btn-primary"}`}
-        disabled={isBusy}
-        onClick={isRecording ? stopRecording : startRecording}
-      >
-        {isRecording ? "Stop" : "Record"}
-      </button>
-      <section aria-live="polite" className="min-h-24 w-full max-w-2xl text-center">
-        <StatusMessage status={status} />
-      </section>
-    </main>
-  );
-}
-
-function StatusMessage({ status }: { status: Status }) {
-  switch (status.kind) {
-    case "idle":
-      return <p className="text-base-content/60">Press Record and speak English or Mandarin.</p>;
-    case "loading":
-      return (
-        <p className="flex items-center justify-center gap-2 text-base-content/60">
-          <span className="loading loading-spinner loading-sm" aria-hidden="true" />
-          Loading speech model…
-        </p>
-      );
-    case "recording":
-      return (
-        <p className="flex items-center justify-center gap-2">
-          <span className="status status-error animate-pulse" aria-hidden="true" />
-          Listening… Press Stop when you're done.
-        </p>
-      );
-    case "transcribing":
-      return (
-        <p className="flex items-center justify-center gap-2 text-base-content/60">
-          <span className="loading loading-spinner loading-sm" aria-hidden="true" />
-          Transcribing…
-        </p>
-      );
-    case "done":
-      return status.transcript ? (
-        <p className="text-2xl leading-relaxed">{status.transcript}</p>
+    // The window frame: the header and the gutters around each screen's sheets.
+    <div className="flex h-screen flex-col bg-base-200 px-2 pb-2">
+      <AppHeader
+        session={openSession}
+        homeDisabled={mic.kind === "starting" || mic.kind === "stopping"}
+        onHome={leaveSession}
+      />
+      {openSession ? (
+        <SessionScreen
+          session={openSession}
+          mic={mic}
+          onPlay={() => listen(openSession.id)}
+          onPause={pause}
+        />
       ) : (
-        <p className="text-base-content/60">No speech recognized.</p>
-      );
-    case "error":
-      return (
-        <div role="alert" className="alert alert-error alert-soft">
-          {status.message}
+        <WelcomeScreen sessions={sessions} onStart={startSession} onOpen={setOpenSessionId} />
+      )}
+      {saveError && (
+        <div className="toast toast-top toast-center">
+          <div role="alert" className="alert alert-error">
+            {saveError}
+          </div>
         </div>
-      );
-  }
+      )}
+    </div>
+  );
 }

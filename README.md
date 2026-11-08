@@ -17,8 +17,8 @@ Translation framework: offline, no API costs.
 | --- | --- |
 | `src/` | React + TypeScript frontend (Vite) |
 | `src-tauri/` | Tauri v2 Rust backend; `build.rs` compiles and links the Swift package via swift-rs |
-| `src-tauri/src/speech.rs` | Microphone capture (cpal) and speech recognition (sherpa-onnx) |
-| `scripts/fetch-models.sh` | Downloads the speech model into `src-tauri/models/` (gitignored) |
+| `src-tauri/src/speech.rs` | Listening sessions: microphone capture (cpal), voice activity detection and speech recognition (sherpa-onnx) |
+| `scripts/fetch-models.sh` | Downloads the speech and VAD models into `src-tauri/models/` (gitignored) |
 | `AppleBridge/` | Swift package |
 | `AppleBridge/Sources/AppleBridgeCore` | Translation and microphone-permission logic as a plain async Swift API |
 | `AppleBridge/Sources/AppleBridgeFFI` | Thin `@_cdecl` wrappers around Core, called from Rust |
@@ -38,7 +38,7 @@ build if they disagree:
 
 ```sh
 npm install
-./scripts/fetch-models.sh   # once: speech model (~136 MB download), checksum-verified
+./scripts/fetch-models.sh   # once: speech and VAD models (~137 MB download), checksum-verified
 npm run tauri dev           # dev mode with hot reload
 npm run tauri build         # release .app in src-tauri/target/release/bundle/macos/
 ```
@@ -77,11 +77,11 @@ If they're missing, the app reports a clear error (added in Phase 5).
 
 ## Microphone permission
 
-macOS asks for microphone access the first time you record. Under `npm run tauri dev`, the
-prompt and the grant belong to your terminal app; in the bundled app, they belong to
-Mandasisstant. If access is denied, recordings capture only silence and the app shows a
-microphone-access error. Change it in **System Settings → Privacy & Security → Microphone**, or
-reset the bundled app's permission with:
+macOS asks for microphone access the first time you start a session. Under `npm run tauri dev`,
+the prompt and the grant belong to your terminal app; in the bundled app, they belong to
+Mandasisstant. If access is denied, the microphone delivers only silence, and the app shows a
+microphone-access error when you pause or leave the session. Change it in **System Settings →
+Privacy & Security → Microphone**, or reset the bundled app's permission with:
 
 ```sh
 tccutil reset Microphone no.noteless.mandasisstant
@@ -91,3 +91,4 @@ tccutil reset Microphone no.noteless.mandasisstant
 
 - [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) (Apache-2.0): on-device speech recognition
 - [X-ASR](https://github.com/Gilgamesh-J/X-ASR) (Apache-2.0): bilingual Chinese–English speech model
+- [Silero VAD](https://github.com/snakers4/silero-vad) (MIT): voice activity detection

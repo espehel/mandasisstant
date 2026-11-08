@@ -37,10 +37,11 @@ Researched 2026-11-08. Decisions and reasons:
   - It loads as an `OfflineRecognizer` with a `transducer` (encoder/decoder/joiner) config.
 - **Two steps:**
   - **Push-to-talk (Phase 2).** Buffer the whole recording and decode it once on stop. This is the simplest end-to-end path through mic, model, and UI.
-  - **Sessions with VAD (Phase 3).** The mic stays open for the whole session. VAD splits speech into segments at pauses, and each segment is decoded as soon as it ends. VAD caps segment length, so decode cost stays small however long the session runs.
+  - **Sessions with VAD (Phase 3).** The mic stays open for the whole session. VAD splits speech into segments at pauses, and each segment is decoded as soon as it ends. The worker caps segment length at 15 s, so decode cost stays small however long the session runs.
 - **VAD: Silero** (`silero_vad.onnx` from the same `asr-models` release; k2-fsa's v4 export, ~630 KB, MIT).
   - It only accepts 16 kHz. Unlike the recognizer it doesn't resample, so the worker resamples first with `sherpa_onnx::LinearResampler`.
-  - Starting settings: threshold 0.5, min speech 0.25 s, min silence 0.5 s, max speech 15 s, window 512 samples.
+  - Settings: threshold 0.5, min speech 0.25 s, min silence 0.3 s, max speech 8 s, window 512 samples.
+  - Max speech is not a hard limit: past it, sherpa-onnx only raises the threshold to 0.9 and ends the segment at the first 0.1 s dip. Continuous speech (or a TV in the background) can extend a segment indefinitely, so the worker flushes the VAD at 15 s, sends that segment, and resets the VAD. Flushing without the reset can yield a negative-length segment whose decode aborts the process.
   - The official examples use 0.1 s min silence, which splits sentences too eagerly.
 - **Audio: `cpal` 0.18.** Open the default input device at its native config (usually 48 kHz f32) and downmix to mono in the callback. The recognizer resamples internally, so no resampling crate is needed.
 - **CPU execution provider.** The static macOS build has no CoreML support, and upstream reports show CoreML gives no speedup on M-series chips.
@@ -97,7 +98,7 @@ Work through these in order. **After each phase, stop, summarize what you did an
 - Set aligned deployment targets everywhere.
 - Done when: the empty Tauri app runs with `npm run tauri dev`, and `swift build` succeeds for the package.
 
-### Phase 2: Push-to-talk speech-to-text - TODO
+### Phase 2: Push-to-talk speech-to-text - Done
 - Add `sherpa-onnx` to `src-tauri/Cargo.toml` and confirm it links into the app next to the Swift static library.
 - Add `scripts/fetch-models.sh` (the X-ASR model for now), gitignore `src-tauri/models/`, and bundle it as a resource.
 - In `speech.rs`:
@@ -127,7 +128,10 @@ Work through these in order. **After each phase, stop, summarize what you did an
   - feeds the VAD in 512-sample windows;
   - decodes each finished segment and sends its text over a `Channel<string>` passed to `start_listening`.
 - `stop_listening` drops the cpal stream, which closes the audio channel. The worker then flushes the VAD, decodes any trailing segment, and exits, and the command joins it. Phase 2's single-shot path goes away.
-- UI: show the session's transcripts as an ordered list that grows as segments arrive.
+- UI:
+  - Every screen shares a header merged into the window's title bar (`titleBarStyle: "Overlay"`, draggable): the macOS window controls, a home button back to the welcome screen, and the open session's date.
+  - A welcome screen dominated by a "Start session" button, with a side menu listing past sessions (saved in the webview's `localStorage`).
+  - Each session opens in its own screen: the session's transcripts as an ordered list that grows as segments arrive, and a bottom bar with a play/pause button. Pause closes the microphone; play resumes listening into the same session.
 - Done when:
   - In one session, several sentences separated by pauses appear as separate transcripts, in order, in both languages.
   - Stopping mid-sentence still transcribes that sentence.
@@ -175,7 +179,7 @@ Not part of the phases above. Pick it up only after Phase 7, and only if I ask f
 
 ### Live partial transcripts
 - While the VAD reports active speech, re-decode the current segment's audio about every 300 ms and send the result as a partial. The decode of the finished segment becomes the final, exactly as in Phase 3.
-- Drain queued audio before each decode, so a slow decode lowers the partial rate instead of building a backlog. VAD max speech (15 s) caps segment length, so decode cost stays bounded.
+- Drain queued audio before each decode, so a slow decode lowers the partial rate instead of building a backlog. The worker's 15 s segment cap keeps decode cost bounded.
 - Change the Channel payload to `{ kind: "partial" | "final"; text: string }`.
 - In the UI, show the in-progress partial below the transcript list and replace it with the final when the segment ends. Translate finals only.
 - The reference pattern is the official `sense_voice_simulate_streaming_microphone.rs` example.
