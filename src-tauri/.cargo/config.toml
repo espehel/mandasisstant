@@ -1,0 +1,4 @@
+# `bundle.macOS.minimumSystemVersion` is ignored by `tauri dev`, so pin the Rust
+# deployment target here too. Keep in sync with MACOS_MIN_VERSION in build.rs.
+[env]
+MACOSX_DEPLOYMENT_TARGET = "26.0"
