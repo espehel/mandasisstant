@@ -46,6 +46,17 @@ Example of an optional follow-up:
 - Do not hand-edit generated schemas, build outputs, or dependency lockfiles; use the owning tool when regeneration is necessary.
 - Use existing dependencies first. Add a dependency only when it materially simplifies required behavior; avoid packages for trivial helpers.
 
+## Module boundaries and architecture
+
+- Organize code by feature and responsibility. Give each module a clear purpose and a small public API; keep implementation details private. Separate lifecycle management, native I/O, and processing when they are distinct responsibilities. Keep related helpers and tests together rather than splitting by file length.
+- Keep `lib.rs` focused on application composition: configure startup and shutdown, register managed state, and wire command handlers. Put handlers in `commands.rs`; they adapt IPC inputs and outputs, resolve application resources, and schedule blocking work. For stateful features, creation handlers construct the resource and subsequent handlers delegate operations to it.
+- Keep feature logic independent of Tauri where practical. Pass ordinary Rust values and callbacks across the boundary, and return values or `Result`. Convert channels, application handles, and framework errors at the command boundary so processing and lifecycle behavior can be tested without the UI runtime.
+- Make ownership and lifetimes explicit. When reusable resources and active work have different lifetimes, separate creation from starting activity. A session or similar resource owns both; stopping releases active resources and finishes pending work while retaining what is needed for reuse. Failed starts and completed shutdowns must leave a well-defined state that permits retry where supported. Define cleanup for worker errors and destruction too.
+- Keep authoritative state with its owner. Represent optional or mutually exclusive activity directly with `Option` or an enum. Avoid parallel flags, duplicate caches, and outer manager types that only forward calls to an object that already owns the lifecycle.
+- Coordinate conflicting operations on the same resource through their actual completion. Starting new work must not race with initialization, stopping, or a worker still draining results. Use the simplest synchronization that preserves this guarantee, let waiting callers yield when work can be slow, and account for an async caller being cancelled while native work continues.
+- Keep each feature's frontend IPC calls and payload types in a matching TypeScript module. Components call those functions; command names, argument casing, and channel conversion stay at that boundary.
+- During restructuring, preserve observable behavior and IPC contracts unless changing them is part of the request. Update both sides of intentional contract changes together, retain relevant regression tests, and update documentation of module responsibilities. Do not introduce generic service layers, traits, factories, or extra files solely to make the architecture look uniform.
+
 ## React patterns
 
 - Use function components and follow the Rules of Hooks. Keep rendering pure and update state immutably.
@@ -65,7 +76,7 @@ Example of an optional follow-up:
 - Use events for notifications and channels when ordered streaming is required. Always release event listeners, including when asynchronous registration finishes after a component unmounts.
 - Keep slow work off the UI thread. Use async APIs for asynchronous I/O and `tauri::async_runtime::spawn_blocking` for blocking work that is safe to run there. Respect native APIs that require the main thread; adding `async` alone does not make blocking code nonblocking.
 - Return `Result` for recoverable failures and propagate with `?`. Handle rejected commands in the UI. Do not use `unwrap`/`expect` for expected input, permission, I/O, or network failures, or silently turn errors into success.
-- Keep shared mutable state limited and lock scopes short. Do not hold a synchronous mutex guard across `.await`.
+- Keep shared mutable state limited and lock scopes as short as correctness permits. Do not hold a synchronous mutex guard across `.await`.
 - Treat frontend arguments as untrusted. Validate them at the native boundary and grant only the capabilities and scopes the feature needs. Custom commands need their own validation; capabilities do not make arbitrary Rust code safe.
 - Do not broaden permissions, disable security controls, or introduce remote content to work around an implementation problem. Keep secrets and private user content out of frontend bundles and logs.
 - Keep FFI and `unsafe` code contained in the bridge; document ownership, lifetime, and thread-safety assumptions when modifying it.
