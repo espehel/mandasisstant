@@ -5,13 +5,13 @@ Build a macOS desktop app that translates between English and Mandarin Chinese f
 
 ## Architecture
 - **Tauri v2** app with a React + TypeScript frontend.
-- **Speech recognition in Rust** (`src-tauri/src/speech.rs`): the official `sherpa-onnx` crate handles voice activity detection (VAD) and recognition, and `cpal` captures the microphone.
+- **Speech recognition in Rust** (`src-tauri/src/speech.rs` and `speech/`): the official `sherpa-onnx` crate handles voice activity detection (VAD) and recognition, and `cpal` captures the microphone. A reusable `Session` owns the recognizer and starts/stops listening.
 - **Swift package** (`AppleBridge/`) in the same repo, linked into the Rust backend with the **swift-rs** crate (compiled via `SwiftLinker` in `build.rs`). It covers Apple framework work only: translation and the microphone permission request.
 - Swift package targets:
   - `AppleBridgeCore`: translation and microphone-permission logic as a clean, plain async Swift API. No FFI concerns here.
   - `AppleBridgeFFI`: thin `@_cdecl` wrappers that only convert types and forward calls to Core.
   - `bridge-test`: small executable that calls Core directly and prints results, for testing without Tauri.
-- Rust exposes Tauri commands: `start_listening`, `stop_listening`, `translate`. From Phase 3 on, transcripts stream to the frontend over a `tauri::ipc::Channel` passed to `start_listening` (ordered, scoped to one session, no global listener to clean up).
+- `lib.rs` registers the command handlers and their `SessionState`. The speech commands are `create_session`, `start_listening` and `stop_listening`; `translate` is planned for Phase 6. `create_session` initializes the session once without opening the microphone. Start/stop reuse it. From Phase 3 on, transcripts stream to the frontend over a `tauri::ipc::Channel` passed to `start_listening` (ordered, scoped to one listening run, no global listener to clean up).
 - Pinyin is generated in the frontend with the `pinyin-pro` npm package.
 
 Speech data flow (from Phase 3):
@@ -84,8 +84,8 @@ Unverified until Phases 2–3:
   - Phase 2's single decode is finite work, so run it in `spawn_blocking`.
   - Phase 3's session worker is long-lived, so it gets its own `std::thread`.
   - Only one thread at a time uses the recognizer and VAD. The cpal callback only downmixes and sends.
-  - Commands that load models or call into Swift are `async`, so they stay off the main thread. Blocking FFI calls go through `spawn_blocking`.
-  - Keep lock scopes short. Never hold a lock while loading a model or joining the worker.
+  - Commands are `async`; blocking model loading, microphone setup, worker joins and FFI calls run in `spawn_blocking`.
+  - An async mutex serializes session creation and start/stop through completion, including loading and worker joins. Callers wait asynchronously; the owned guard moves into `spawn_blocking` so another operation cannot begin before the native work finishes.
 - Strings passed across the Swift FFI must be freed correctly.
 - Don't rely on memory for API details that may have changed. That includes Tauri v2 config, swift-rs usage, the sherpa-onnx Rust API, cpal 0.18, and the macOS 26 Translation and AVFAudio APIs. The official sherpa-onnx examples pin cpal 0.16: in 0.18, `play()` is required and `SampleRate` is a plain `u32`. Check current docs or crate sources when unsure.
 - No paid or cloud APIs.
@@ -123,6 +123,7 @@ Work through these in order. **After each phase, stop, summarize what you did an
 ### Phase 3: Long-lived sessions with VAD - TODO
 - Add `silero_vad.onnx` to the fetch script.
 - Turn the recording into a session: the mic stays open from Start until Stop.
+- The reusable session is created separately by `create_session`; stopping listening retains it and its loaded recognizer for the next Start.
 - A session worker thread owns the VAD and uses the shared recognizer. It:
   - resamples to 16 kHz with `LinearResampler`;
   - feeds the VAD in 512-sample windows;
@@ -170,7 +171,9 @@ Work through these in order. **After each phase, stop, summarize what you did an
   - To retest: `tccutil reset Microphone no.noteless.mandasisstant`.
 
 ## Conventions
-- Keep `AppleBridgeFFI` thin; Apple framework logic belongs in Core. Speech logic lives in `src-tauri/src/speech.rs`.
+- Keep `AppleBridgeFFI` thin; Apple framework logic belongs in Core. Speech logic lives in `src-tauri/src/speech.rs` (recognizer loading and segment decoding) and `src-tauri/src/speech/`: `session.rs` owns the reusable lifecycle, `microphone.rs` captures/downmixes audio, and `transcription.rs` runs resampling and VAD.
+- `lib.rs` wires up managed state and command registration. Tauri handlers live in `src-tauri/src/commands.rs`: they serialize session operations, resolve bundled paths, move blocking work to `spawn_blocking`, and turn `Channel`s into callbacks. The speech modules don't depend on Tauri.
+- Each feature's commands have a matching TypeScript module that owns their `invoke` calls and payload types (`src/speech.ts`). Components call those functions, never `invoke` directly.
 - `sherpa-onnx` is the only ML runtime. Don't add the `ort` crate or `sherpa-rs`: their onnxruntime and protobuf symbols would clash with the static library.
 - Write a short README section documenting how to build, fetch the models, run `bridge-test`, install the Translation language packs (System Settings → General → Language & Region → Translation Languages), and reset the microphone permission. Credit sherpa-onnx and X-ASR (both Apache-2.0) and Silero VAD (MIT).
 

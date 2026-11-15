@@ -1,9 +1,9 @@
 import { useEffect, useState } from "react";
-import { Channel, invoke } from "@tauri-apps/api/core";
 import AppHeader from "./AppHeader";
 import SessionScreen, { type Mic } from "./SessionScreen";
 import WelcomeScreen from "./WelcomeScreen";
 import { loadSessions, saveSessions, type Session } from "./sessions";
+import { createSession, startListening, stopListening } from "./speech";
 
 export default function App() {
   const [sessions, setSessions] = useState(loadSessions);
@@ -22,20 +22,22 @@ export default function App() {
     }
   }, [sessions]);
 
+  // Appends by id, so the trailing transcript lands in its session even after leaving it.
+  function appendTranscript(sessionId: string, transcript: string) {
+    setSessions((current) =>
+      current.map((session) =>
+        session.id === sessionId
+          ? { ...session, transcripts: [...session.transcripts, transcript] }
+          : session,
+      ),
+    );
+  }
+
   async function listen(sessionId: string) {
     setMic({ kind: "starting" });
-    // Appends by id, so the trailing transcript lands in its session even after leaving it.
-    const onTranscript = new Channel<string>((transcript) => {
-      setSessions((current) =>
-        current.map((session) =>
-          session.id === sessionId
-            ? { ...session, transcripts: [...session.transcripts, transcript] }
-            : session,
-        ),
-      );
-    });
     try {
-      await invoke("start_listening", { onTranscript });
+      await createSession();
+      await startListening((transcript) => appendTranscript(sessionId, transcript));
       setMic({ kind: "listening" });
     } catch (error) {
       setMic({ kind: "failed", message: String(error) });
@@ -46,7 +48,7 @@ export default function App() {
   async function pause() {
     setMic({ kind: "stopping" });
     try {
-      await invoke("stop_listening");
+      await stopListening();
       setMic({ kind: "paused" });
       return true;
     } catch (error) {

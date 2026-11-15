@@ -17,7 +17,12 @@ Translation framework: offline, no API costs.
 | --- | --- |
 | `src/` | React + TypeScript frontend (Vite) |
 | `src-tauri/` | Tauri v2 Rust backend; `build.rs` compiles and links the Swift package via swift-rs |
-| `src-tauri/src/speech.rs` | Listening sessions: microphone capture (cpal), voice activity detection and speech recognition (sherpa-onnx) |
+| `src-tauri/src/lib.rs` | App setup, managed session state and command registration |
+| `src-tauri/src/commands.rs` | Tauri handlers that create a reusable session and serialize start/stop operations |
+| `src-tauri/src/speech.rs` | Recognizer loading and individual speech-segment decoding (sherpa-onnx) |
+| `src-tauri/src/speech/session.rs` | Reusable session lifecycle: create once, start and stop listening |
+| `src-tauri/src/speech/microphone.rs` | Microphone capture (cpal) and downmixing to mono |
+| `src-tauri/src/speech/transcription.rs` | Listening worker: resampling, voice activity detection and ordered transcripts |
 | `scripts/fetch-models.sh` | Downloads the speech and VAD models into `src-tauri/models/` (gitignored) |
 | `AppleBridge/` | Swift package |
 | `AppleBridge/Sources/AppleBridgeCore` | Translation and microphone-permission logic as a plain async Swift API |
